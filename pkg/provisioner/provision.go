@@ -25,27 +25,52 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 	annotations := make(map[string]string)
 	annotations[annCreatedBy] = createdBy
 
-	pv := &v1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        options.PVName,
-			Labels:      map[string]string{},
-			Annotations: annotations,
-		},
-		Spec: v1.PersistentVolumeSpec{
-			PersistentVolumeReclaimPolicy: p.reclaimPolicy,
-			AccessModes:                   options.PVC.Spec.AccessModes,
-			Capacity: v1.ResourceList{
-				v1.ResourceName(v1.ResourceStorage): options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
+	var pv *v1.PersistentVolume
+
+	if p.exportNfs {
+		pv = &v1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        options.PVName,
+				Labels:      map[string]string{},
+				Annotations: annotations,
 			},
-			PersistentVolumeSource: v1.PersistentVolumeSource{
-				NFS: &v1.NFSVolumeSource{
-					Server:   p.serverHostname,
-					Path:     path,
-					ReadOnly: false,
+			Spec: v1.PersistentVolumeSpec{
+				PersistentVolumeReclaimPolicy: p.reclaimPolicy,
+				AccessModes:                   options.PVC.Spec.AccessModes,
+				Capacity: v1.ResourceList{
+					v1.ResourceName(v1.ResourceStorage): options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
+				},
+				PersistentVolumeSource: v1.PersistentVolumeSource{
+					NFS: &v1.NFSVolumeSource{
+						Server:   p.serverHostname,
+						Path:     path,
+						ReadOnly: false,
+					},
 				},
 			},
-		},
+		}
+	} else {
+		pv = &v1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        options.PVName,
+				Labels:      map[string]string{},
+				Annotations: annotations,
+			},
+			Spec: v1.PersistentVolumeSpec{
+				PersistentVolumeReclaimPolicy: p.reclaimPolicy,
+				AccessModes:                   options.PVC.Spec.AccessModes,
+				Capacity: v1.ResourceList{
+					v1.ResourceName(v1.ResourceStorage): options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
+				},
+				PersistentVolumeSource: v1.PersistentVolumeSource{
+					HostPath: &v1.HostPathVolumeSource{
+						Path: path,
+					},
+				},
+			},
+		}
 	}
+
 	log.Debug("Returning pv:")
 	log.Debug(*pv)
 
@@ -57,7 +82,13 @@ func (p ZFSProvisioner) createVolume(options controller.VolumeOptions) (string, 
 	zfsPath := p.parent.Name + "/" + options.PVName
 	properties := make(map[string]string)
 
-	properties["sharenfs"] = p.shareOptions
+	if p.exportNfs {
+		log.Info("Enabling NFS export with options: ", p.shareOptions)
+		properties["sharenfs"] = p.shareOptions
+	} else {
+		log.Info("Disabling NFS export")
+		properties["sharenfs"] = "off"
+	}
 
 	storageRequest := options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 	storageRequestBytes := strconv.FormatInt(storageRequest.Value(), 10)

@@ -16,6 +16,7 @@ const (
 type ZFSProvisioner struct {
 	parent *zfs.Dataset // The parent dataset
 
+	exportNfs      bool   // true we should export the nfs share, false we should not
 	shareOptions   string // Additional nfs export options, comma-separated
 	serverHostname string // The hostname that should be returned as NFS Server
 	reclaimPolicy  v1.PersistentVolumeReclaimPolicy
@@ -58,7 +59,7 @@ func (p ZFSProvisioner) Collect(ch chan<- prometheus.Metric) {
 }
 
 // NewZFSProvisioner returns a new ZFSProvisioner
-func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname string, reclaimPolicy string) ZFSProvisioner {
+func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname string, reclaimPolicy string, doNfsExport bool) ZFSProvisioner {
 	var kubernetesReclaimPolicy v1.PersistentVolumeReclaimPolicy
 	// Parse reclaim policy
 	switch reclaimPolicy {
@@ -68,9 +69,14 @@ func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname 
 		kubernetesReclaimPolicy = v1.PersistentVolumeReclaimRetain
 	}
 
+	if doNfsExport {
+		shareOptions = "off"
+	}
+
 	return ZFSProvisioner{
 		parent: parent,
 
+		exportNfs:      doNfsExport,
 		shareOptions:   shareOptions,
 		serverHostname: serverHostname,
 		reclaimPolicy:  kubernetesReclaimPolicy,
