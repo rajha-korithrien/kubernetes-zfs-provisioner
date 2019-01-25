@@ -69,7 +69,7 @@ func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname 
 		kubernetesReclaimPolicy = v1.PersistentVolumeReclaimRetain
 	}
 
-	if doNfsExport {
+	if !doNfsExport {
 		shareOptions = "off"
 	}
 
