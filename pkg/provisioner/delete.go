@@ -16,9 +16,15 @@ func (p ZFSProvisioner) Delete(volume *v1.PersistentVolume) error {
 		return err
 	}
 
-	log.WithFields(log.Fields{
-		"volume": volume.Spec.NFS.Path,
-	}).Info("Deleted volume")
+	if p.exportNfs {
+		log.WithFields(log.Fields{
+			"volume": volume.Spec.NFS.Path,
+		}).Info("Deleted volume")
+	} else {
+		log.WithFields(log.Fields{
+			"volume": volume.Spec.HostPath.Path,
+		}).Info("Deleted volume")
+	}
 	return nil
 }
 

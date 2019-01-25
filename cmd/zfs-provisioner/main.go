@@ -8,7 +8,6 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/gentics/kubernetes-zfs-provisioner/pkg/provisioner"
 	"github.com/kubernetes-incubator/external-storage/lib/controller"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -19,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"kubernetes-zfs-provisioner/pkg/provisioner"
 )
 
 const (
@@ -40,6 +40,7 @@ func main() {
 	viper.SetDefault("provisioner_name", "gentics.com/zfs")
 	viper.SetDefault("metrics_port", "8080")
 	viper.SetDefault("debug", false)
+	viper.SetDefault("enable_export", true)
 
 	if viper.GetBool("debug") == true {
 		log.SetLevel(log.DebugLevel)
@@ -62,6 +63,8 @@ func main() {
 	log.WithFields(log.Fields{
 		"config": viper.GetString("kube_conf"),
 	}).Info("Loaded kubernetes config")
+
+	log.Debug("Found export directive: ", viper.GetBool("enable_export"))
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -105,7 +108,7 @@ func main() {
 	}
 
 	// Create the provisioner
-	zfsProvisioner := provisioner.NewZFSProvisioner(parent, viper.GetString("share_options"), viper.GetString("server_hostname"), viper.GetString("kube_reclaim_policy"))
+	zfsProvisioner := provisioner.NewZFSProvisioner(parent, viper.GetString("share_options"), viper.GetString("server_hostname"), viper.GetString("kube_reclaim_policy"), viper.GetBool("enable_export"))
 
 	// Start and export the prometheus collector
 	registry := prometheus.NewPedanticRegistry()
