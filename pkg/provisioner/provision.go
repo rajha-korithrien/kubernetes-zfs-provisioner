@@ -84,11 +84,10 @@ func (p ZFSProvisioner) createVolume(options controller.VolumeOptions) (string, 
 
 	if p.exportNfs {
 		log.Info("Enabling NFS export with options: ", p.shareOptions)
-		properties["sharenfs"] = p.shareOptions
 	} else {
 		log.Info("Disabling NFS export")
-		properties["sharenfs"] = "off"
 	}
+	properties["sharenfs"] = p.shareOptions
 
 	storageRequest := options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 	storageRequestBytes := strconv.FormatInt(storageRequest.Value(), 10)
