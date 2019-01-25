@@ -64,7 +64,7 @@ func main() {
 		"config": viper.GetString("kube_conf"),
 	}).Info("Loaded kubernetes config")
 
-	log.Info("Found export directive: ", viper.GetBool("enable_export"))
+	log.Debug("Found export directive: ", viper.GetBool("enable_export"))
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
