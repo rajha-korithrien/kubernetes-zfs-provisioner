@@ -1,0 +1,17 @@
+FROM alpine:latest
+MAINTAINER Rajha Korithrien <rajha.korithrien@gmail.com>
+
+# This Dockerfile is used to build a container that can be deployed as a custom service on RancherOS
+# Refer to deploy/rancher/README.md for more details.
+
+COPY /bin/zfs-provisioner /zfs-provisioner
+COPY deploy/rancher/provisioner-entry.sh /provisioner-entry.sh
+
+RUN chmod +x /zfs-provisioner
+RUN chmod +x /provisioner-entry.sh
+
+RUN mkdir -p /usr/sbin
+COPY deploy/rancher/zfs /usr/sbin/zfs
+RUN chmod +x /usr/sbin/zfs
+
+ENTRYPOINT ["/provisioner-entry.sh", "/zfs-provisioner"]
