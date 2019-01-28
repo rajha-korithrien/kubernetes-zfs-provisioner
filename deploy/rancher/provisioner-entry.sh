@@ -11,5 +11,5 @@ mount --rbind /host/dev /dev > /dev/null 2>&1
 
 #Now we execute the zfs-provisioner
 echo "Starting zfs-provisioner via $@"
-echo "Naming zfs-provisioner: $ZFS_PROVISIONER_NAME"
+echo "Providing input name: $ZFS_PROVISIONER_NAME"
 exec "$@"
