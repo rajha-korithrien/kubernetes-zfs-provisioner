@@ -20,3 +20,6 @@ bin
 .DS_Store
 .env
 kube.conf
+
+#Intellij
+.idea
