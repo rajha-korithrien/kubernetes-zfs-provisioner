@@ -6,7 +6,7 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	zfs "github.com/simt2/go-zfs"
-	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/api/core/v1"
 )
 
 // Delete removes a given volume from the server
