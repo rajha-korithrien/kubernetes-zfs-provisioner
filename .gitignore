@@ -21,5 +21,8 @@ bin
 .env
 kube.conf
 
-#Intellij
+#Vim tmp files
+*~
+
+#Idea IDE files
 .idea
