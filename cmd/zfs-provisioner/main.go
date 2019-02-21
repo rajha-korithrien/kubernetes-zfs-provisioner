@@ -126,10 +126,13 @@ func main() {
 	// Start the controller
 	pc := controller.NewProvisionController(clientset, viper.GetString("provisioner_name"), zfsProvisioner,
 		serverVersion.GitVersion, func(provisionController *controller.ProvisionController) error {
-			controller.LeaderElection(false)
+			controller.ExponentialBackOffOnError(false)
 			return nil
 		}, func(provisionController *controller.ProvisionController) error {
-			controller.Threadiness(2)
+			//The second argument used to be failedRetryThreshold which no longer exists so we try to emulate the behavior
+			//via the failed provision and delete thresholds
+			controller.FailedDeleteThreshold(2)
+			controller.FailedProvisionThreshold(2)
 			return nil
 		}, func(provisionController *controller.ProvisionController) error {
 			controller.LeaseDuration(leasePeriod)
