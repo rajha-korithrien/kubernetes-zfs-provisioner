@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"os"
+	"strings"
+	"time"
 	log "github.com/Sirupsen/logrus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -39,16 +42,30 @@ func main() {
 	viper.SetDefault("metrics_port", "8080")
 	viper.SetDefault("debug", false)
 	viper.SetDefault("enable_export", true)
+	viper.SetDefault("create_unique_name", false)
 
 	if viper.GetBool("debug") == true {
 		log.SetLevel(log.DebugLevel)
+		log.Debug("enable_export: ", viper.GetBool("enable_export"))
+		log.Debug("create_unique_name: ", viper.GetBool("create_unique_name"))
+	}
+
+	var provisionerName = viper.GetString("provisioner_name")
+	if (!viper.GetBool("enable_export")) && viper.GetBool("create_unique_name") {
+		hostname, err := os.Hostname()
+		if err != nil {
+			log.Fatal("NFS export has been disabled, which forces zfs-provisioner to be local only." +
+				"The variable create_unique_name has been set so zfs-provisioner must have a unique name, " +
+				"the hostname is normally used, but the hostname can not be determined.")
+		}
+		provisionerName += "-" + hostname
 	}
 
 	// Ensure provisioner name is valid
-	if errs := validateProvisionerName(viper.GetString("provisioner_name"), field.NewPath("provisioner")); len(errs) != 0 {
+	if errs := validateProvisionerName(provisionerName, field.NewPath("provisioner")); len(errs) != 0 {
 		log.WithFields(log.Fields{
 			"errors": errs,
-		}).Fatal("Invalid provisioner name specified")
+		}).Fatal("Invalid provisioner name specified: ", provisionerName)
 	}
 
 	// Retrieve kubernetes config and connect to server
@@ -144,7 +161,7 @@ func main() {
 			controller.RetryPeriod(retryPeriod)
 			return nil
 		})
-	log.Info("Listening for events")
+	log.Info("Listening for events via provisioner name: " + provisionerName)
 	pc.Run(wait.NeverStop)
 }
 

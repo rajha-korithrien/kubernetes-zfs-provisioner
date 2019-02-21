@@ -1,0 +1,22 @@
+zfs-provisioner:
+  image: rajhakorithrien/rancher-zfs-provisioner:latest
+  restart: always
+  net: host
+  pid: host
+  uts: host
+  ipc: host
+  privileged: true
+  labels:
+    io.rancher.os.scope: system
+    io.rancher.os.after: "zfs"
+  volumes:
+    - /dev:/host/dev
+  volumes_from:
+    - all-volumes
+  environment:
+    - PATH=/bin:/sbin:/usr/sbin:/usr/bin
+    - ZFS_ENABLE_EXPORT=true
+    - ZFS_DEBUG=false
+    - ZFS_PARENT_DATASET=kubernetes-mirror/pvc
+    - ZFS_PROVISIONER_NAME=gentics.com/zfs-mirror-a
+    - ZFS_KUBE_CONF=/home/rancher/kube_config_rancher-cluster.yml
