@@ -5,10 +5,10 @@ import (
 	"strconv"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/kubernetes-incubator/external-storage/lib/controller"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	zfs "github.com/simt2/go-zfs"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/api/core/v1"
 )
 
 // Provision creates a PersistentVolume, sets quota and shares it via NFS.
@@ -98,6 +98,6 @@ func (p ZFSProvisioner) createVolume(options controller.VolumeOptions) (string, 
 	if err != nil {
 		return "", fmt.Errorf("Creating ZFS dataset failed with: %v", err.Error())
 	}
-
+	
 	return dataset.Mountpoint, nil
 }

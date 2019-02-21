@@ -2,13 +2,7 @@ package main
 
 import (
 	"errors"
-	"net/http"
-	"os/exec"
-	"strings"
-	"time"
-
 	log "github.com/Sirupsen/logrus"
-	"github.com/kubernetes-incubator/external-storage/lib/controller"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/simt2/go-zfs"
@@ -19,13 +13,17 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"kubernetes-zfs-provisioner/pkg/provisioner"
+	"net/http"
+	"os/exec"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
+	"strings"
 )
 
 const (
 	leasePeriod   = controller.DefaultLeaseDuration
 	retryPeriod   = controller.DefaultRetryPeriod
 	renewDeadline = controller.DefaultRenewDeadline
-	termLimit     = controller.DefaultTermLimit
+	//termLimit     = controller.DefaultTermLimit
 )
 
 func main() {
@@ -126,7 +124,23 @@ func main() {
 	log.Info("Started Prometheus exporter")
 
 	// Start the controller
-	pc := controller.NewProvisionController(clientset, 15*time.Second, viper.GetString("provisioner_name"), zfsProvisioner, serverVersion.GitVersion, false, 2, leasePeriod, renewDeadline, retryPeriod, termLimit)
+	pc := controller.NewProvisionController(clientset, viper.GetString("provisioner_name"), zfsProvisioner,
+		serverVersion.GitVersion, func(provisionController *controller.ProvisionController) error {
+			controller.LeaderElection(false)
+			return nil
+		}, func(provisionController *controller.ProvisionController) error {
+			controller.Threadiness(2)
+			return nil
+		}, func(provisionController *controller.ProvisionController) error {
+			controller.LeaseDuration(leasePeriod)
+			return nil
+		}, func(provisionController *controller.ProvisionController) error {
+			controller.RenewDeadline(renewDeadline)
+			return nil
+		}, func(provisionController *controller.ProvisionController) error {
+			controller.RetryPeriod(retryPeriod)
+			return nil
+		})
 	log.Info("Listening for events")
 	pc.Run(wait.NeverStop)
 }

@@ -4,11 +4,11 @@ import (
 	"os"
 	"testing"
 
-	"github.com/kubernetes-incubator/external-storage/lib/controller"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	zfs "github.com/simt2/go-zfs"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/api/core/v1"
 )
 
 func TestDelete(t *testing.T) {
