@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"os"
 	log "github.com/Sirupsen/logrus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -15,6 +14,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"kubernetes-zfs-provisioner/pkg/provisioner"
 	"net/http"
+	"os"
 	"os/exec"
 	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	"strings"

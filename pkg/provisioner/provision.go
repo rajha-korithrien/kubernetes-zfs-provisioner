@@ -2,7 +2,9 @@ package provisioner
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 
 	log "github.com/Sirupsen/logrus"
 	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
@@ -98,6 +100,34 @@ func (p ZFSProvisioner) createVolume(options controller.VolumeOptions) (string, 
 	if err != nil {
 		return "", fmt.Errorf("Creating ZFS dataset failed with: %v", err.Error())
 	}
-	
+
+	for _, mountOption := range options.MountOptions {
+		log.Info("Processing mountOption: " + mountOption)
+		if strings.Contains(mountOption, "gid=") {
+			split := strings.Split(mountOption, "=")
+			gid, err := strconv.Atoi(split[1])
+			if err == nil {
+				err := os.Chown(dataset.Mountpoint, -1, gid)
+				if err == nil {
+					err := os.Chmod(dataset.Mountpoint, 0674)
+					if err == nil {
+						log.Info("Processed: " + mountOption)
+					}else{
+						log.Error("Unable to chmod: " + dataset.Mountpoint)
+						return "", fmt.Errorf("Chmod of mount point " + dataset.Mountpoint + " failed with: %v", err.Error())
+					}
+				}else{
+					log.Error("Unable to chown to gid: " + strconv.Itoa(gid))
+					return "", fmt.Errorf("Chown to gid: " + strconv.Itoa(gid) + " failed with: %v", err.Error())
+				}
+			}else{
+				log.Warn("Ignoring unparsable gid: " + split[1])
+			}
+		}else{
+			log.Warn("Ignoring unknown mount option: " + mountOption)
+			log.Warn("Current Options are (white space is important): gid=X where X is a GID number")
+		}
+	}
+
 	return dataset.Mountpoint, nil
 }
