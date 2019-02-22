@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"errors"
 	"os"
 	log "github.com/Sirupsen/logrus"
@@ -157,6 +158,11 @@ func main() {
 			return nil
 		}, func(provisionController *controller.ProvisionController) error {
 			controller.RetryPeriod(retryPeriod)
+			return nil
+		}, func(provisionController *controller.ProvisionController) error {
+			leaderElection := false
+			log.Info("Leader Election for: " + provisionerName + " " + strconv.FormatBool(leaderElection))
+			controller.LeaderElection(leaderElection)
 			return nil
 		})
 	log.Info("Listening for events via provisioner name: " + provisionerName)
