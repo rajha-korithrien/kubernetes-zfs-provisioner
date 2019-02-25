@@ -7,10 +7,10 @@ import (
 	"strings"
 
 	log "github.com/Sirupsen/logrus"
-	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	zfs "github.com/simt2/go-zfs"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 )
 
 // Provision creates a PersistentVolume, sets quota and shares it via NFS.
@@ -26,6 +26,7 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 	// See nfs provisioner in github.com/kubernetes-incubator/external-storage for why we annotate this way and if it's still allowed
 	annotations := make(map[string]string)
 	annotations[annCreatedBy] = createdBy
+	annotations[provisionerIdKey] = p.identity
 
 	var pv *v1.PersistentVolume
 
@@ -112,18 +113,18 @@ func (p ZFSProvisioner) createVolume(options controller.VolumeOptions) (string, 
 					err := os.Chmod(dataset.Mountpoint, 0674)
 					if err == nil {
 						log.Info("Processed: " + mountOption)
-					}else{
+					} else {
 						log.Error("Unable to chmod: " + dataset.Mountpoint)
-						return "", fmt.Errorf("Chmod of mount point " + dataset.Mountpoint + " failed with: %v", err.Error())
+						return "", fmt.Errorf("Chmod of mount point "+dataset.Mountpoint+" failed with: %v", err.Error())
 					}
-				}else{
+				} else {
 					log.Error("Unable to chown to gid: " + strconv.Itoa(gid))
-					return "", fmt.Errorf("Chown to gid: " + strconv.Itoa(gid) + " failed with: %v", err.Error())
+					return "", fmt.Errorf("Chown to gid: "+strconv.Itoa(gid)+" failed with: %v", err.Error())
 				}
-			}else{
+			} else {
 				log.Warn("Ignoring unparsable gid: " + split[1])
 			}
-		}else{
+		} else {
 			log.Warn("Ignoring unknown mount option: " + mountOption)
 			log.Warn("Current Options are (white space is important): gid=X where X is a GID number")
 		}

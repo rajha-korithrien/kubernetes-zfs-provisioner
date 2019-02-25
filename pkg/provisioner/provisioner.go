@@ -1,15 +1,18 @@
 package provisioner
 
-import "strconv"
+import (
+	"strconv"
+)
 
 import "k8s.io/api/core/v1"
 import "github.com/prometheus/client_golang/prometheus"
-import zfs "github.com/simt2/go-zfs"
+import "github.com/simt2/go-zfs"
 import log "github.com/Sirupsen/logrus"
 
 const (
-	annCreatedBy = "kubernetes.io/createdby"
-	createdBy    = "zfs-provisioner"
+	annCreatedBy     = "kubernetes.io/createdby"
+	createdBy        = "zfs-provisioner"
+	provisionerIdKey = "zfs-provisioner-id"
 )
 
 // ZFSProvisioner implements the Provisioner interface to create and export ZFS volumes
@@ -23,6 +26,8 @@ type ZFSProvisioner struct {
 
 	persistentVolumeCapacity *prometheus.Desc
 	persistentVolumeUsed     *prometheus.Desc
+
+	identity string //used to identify this provisioner and the volumes it creates
 }
 
 // Describe implements prometheus.Collector
@@ -59,7 +64,7 @@ func (p ZFSProvisioner) Collect(ch chan<- prometheus.Metric) {
 }
 
 // NewZFSProvisioner returns a new ZFSProvisioner
-func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname string, reclaimPolicy string, doNfsExport bool) ZFSProvisioner {
+func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname string, provisionerId string, reclaimPolicy string, doNfsExport bool) ZFSProvisioner {
 	var kubernetesReclaimPolicy v1.PersistentVolumeReclaimPolicy
 	// Parse reclaim policy
 	switch reclaimPolicy {
@@ -80,6 +85,8 @@ func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname 
 		shareOptions:   shareOptions,
 		serverHostname: serverHostname,
 		reclaimPolicy:  kubernetesReclaimPolicy,
+
+		identity: provisionerId,
 
 		persistentVolumeCapacity: prometheus.NewDesc(
 			"zfs_provisioner_persistent_volume_capacity",

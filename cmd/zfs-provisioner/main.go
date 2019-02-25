@@ -120,8 +120,16 @@ func main() {
 		}).Fatal("Could not open ZFS parent dataset")
 	}
 
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err,
+		}).Fatal("Could not determine the host of the provisioner")
+	}
+
 	// Create the provisioner
-	zfsProvisioner := provisioner.NewZFSProvisioner(parent, viper.GetString("share_options"), viper.GetString("server_hostname"), viper.GetString("kube_reclaim_policy"), viper.GetBool("enable_export"))
+	zfsProvisioner := provisioner.NewZFSProvisioner(parent, viper.GetString("share_options"), viper.GetString("server_hostname"),
+		hostname, viper.GetString("kube_reclaim_policy"), viper.GetBool("enable_export"))
 
 	// Start and export the prometheus collector
 	registry := prometheus.NewPedanticRegistry()
