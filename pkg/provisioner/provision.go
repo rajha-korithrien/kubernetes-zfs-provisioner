@@ -13,8 +13,19 @@ import (
 	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 )
 
+var currentRequest = -1 //we use this to keep track of the number of times Provision has been called
+
 // Provision creates a PersistentVolume, sets quota and shares it via NFS.
 func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.PersistentVolume, error) {
+	currentRequest++
+	if currentRequest%p.totalProvisioners != p.numericId {
+		return nil, &controller.IgnoredError{
+			"Provisioner: " + p.identity + " with id: " + strconv.Itoa(p.numericId) +
+				" should not provision volume: " + options.PVName + " because it has count: " + strconv.Itoa(currentRequest),
+		}
+	}
+	log.Infof("Provisioning request: %v with id: %v", options.PVName, currentRequest)
+
 	path, err := p.createVolume(options)
 	if err != nil {
 		return nil, err
@@ -99,7 +110,7 @@ func (p ZFSProvisioner) createVolume(options controller.VolumeOptions) (string, 
 
 	dataset, err := zfs.CreateFilesystem(zfsPath, properties)
 	if err != nil {
-		return "", fmt.Errorf("Creating ZFS dataset failed with: %v", err.Error())
+		return "", fmt.Errorf("creating ZFS dataset failed with: %v", err.Error())
 	}
 
 	for _, mountOption := range options.MountOptions {
@@ -115,11 +126,21 @@ func (p ZFSProvisioner) createVolume(options controller.VolumeOptions) (string, 
 						log.Info("Processed: " + mountOption)
 					} else {
 						log.Error("Unable to chmod: " + dataset.Mountpoint)
-						return "", fmt.Errorf("Chmod of mount point "+dataset.Mountpoint+" failed with: %v", err.Error())
+						destroyErr := dataset.Destroy(zfs.DestroyDefault)
+						if destroyErr != nil {
+							return "", fmt.Errorf("chmod of mount point: %v failed with: %v and further cleanup of created dataset filed with: %v", dataset.Mountpoint, err.Error(), destroyErr.Error())
+						} else {
+							return "", fmt.Errorf("chmod of mount point: %v failed with: %v", dataset.Mountpoint, err.Error())
+						}
 					}
 				} else {
 					log.Error("Unable to chown to gid: " + strconv.Itoa(gid))
-					return "", fmt.Errorf("Chown to gid: "+strconv.Itoa(gid)+" failed with: %v", err.Error())
+					destroyErr := dataset.Destroy(zfs.DestroyDefault)
+					if destroyErr != nil {
+						return "", fmt.Errorf("chown to gid: %v failed with: %v and further cleanup of created dataset failed with: %v", gid, err.Error(), destroyErr.Error())
+					} else {
+						return "", fmt.Errorf("chown to gid: %v failed with: %v", gid, err.Error())
+					}
 				}
 			} else {
 				log.Warn("Ignoring unparsable gid: " + split[1])
