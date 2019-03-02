@@ -195,6 +195,14 @@
   version = "v1.1.4"
 
 [[projects]]
+  branch = "master"
+  digest = "1:40c39d9ea74e57ffc9e5f89f0cb236d549724c4aa3e3c652b92d2c95618aa915"
+  name = "github.com/minio/dsync"
+  packages = ["."]
+  pruneopts = ""
+  revision = "fb604afd87b2a095432c17af2dda742960ef111e"
+
+[[projects]]
   digest = "1:bcc46a0fbd9e933087bef394871256b5c60269575bb661935874729c65bbbf60"
   name = "github.com/mitchellh/mapstructure"
   packages = ["."]
@@ -756,6 +764,7 @@
   analyzer-version = 1
   input-imports = [
     "github.com/Sirupsen/logrus",
+    "github.com/minio/dsync",
     "github.com/prometheus/client_golang/prometheus",
     "github.com/prometheus/client_golang/prometheus/promhttp",
     "github.com/simt2/go-zfs",

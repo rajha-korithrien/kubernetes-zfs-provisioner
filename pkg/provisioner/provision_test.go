@@ -15,7 +15,7 @@ import (
 func TestProvision(t *testing.T) {
 	parent, _ := zfs.GetDataset("test/volumes")
 	p := NewZFSProvisioner(parent, "", "127.0.0.1", "test-id",
-		"Delete", true, 0, 1)
+		"Delete", true, "testing-0")
 
 	options := controller.VolumeOptions{
 		PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimDelete,

@@ -2,29 +2,57 @@ package provisioner
 
 import (
 	"fmt"
+	"github.com/minio/dsync"
 	"os"
 	"strconv"
 	"strings"
 
 	log "github.com/Sirupsen/logrus"
-	zfs "github.com/simt2/go-zfs"
+	"github.com/simt2/go-zfs"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 )
 
-var currentRequest = -1 //we use this to keep track of the number of times Provision has been called
+var lockServerStarted = false
+var dm *dsync.DRWMutex
 
 // Provision creates a PersistentVolume, sets quota and shares it via NFS.
 func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.PersistentVolume, error) {
-	currentRequest++
-	if currentRequest%p.totalProvisioners != p.numericId {
-		return nil, &controller.IgnoredError{
-			"Provisioner: " + p.identity + " with id: " + strconv.Itoa(p.numericId) +
-				" should not provision volume: " + options.PVName + " because it has count: " + strconv.Itoa(currentRequest),
+
+	if !lockServerStarted {
+		configuredCount, err := p.getConfiguredProvisionerCount(options)
+		if err != nil {
+			log.Errorf("Provisioner: %v was unable to get total provisioner count", p.alphaId)
+			return nil, err
 		}
+		namespace, name, tcpPort, err := p.getProvisionerLockConfig(options)
+		if err != nil {
+			log.Errorf("Provisioner: %v was unable to get distributed lock config information", p.alphaId)
+			return nil, err
+		}
+		//At this point we need to start our local lock server so it can talk with the other provisioners
+		//the other provisioners will be clients to this server
+		go StartLockServer(tcpPort)
+		lockServerStarted = true
+
+		//now we need to start a client that talks to all the other lock servers
+		hostnames, err := p.getProvisionerHostnameInfo(configuredCount, namespace, name)
+		if err != nil {
+			log.Errorf("Provisioner: %v was unable to get configured lock data config map", p.alphaId)
+			return nil, err
+		}
+
+		//here we need to do something with hostnames and tcpPorts to create the rpc clients that get sent
+		//to the dsync.New call
+		ds, err := dsync.New(nil, 0)
+		if err != nil {
+			log.Errorf("Provisioner: %v was unable to create a dsync object")
+			return nil, err
+		}
+		dm = dsync.NewDRWMutex("provision-list", ds)
 	}
-	log.Infof("Provisioning request: %v with id: %v", options.PVName, currentRequest)
+	log.Infof("Provisioning request: %v with provisioner: %v", options.PVName, p.alphaId)
 
 	path, err := p.createVolume(options)
 	if err != nil {
@@ -37,7 +65,7 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 	// See nfs provisioner in github.com/kubernetes-incubator/external-storage for why we annotate this way and if it's still allowed
 	annotations := make(map[string]string)
 	annotations[annCreatedBy] = createdBy
-	annotations[provisionerIdKey] = p.identity
+	annotations[idKey] = p.provisionerHost
 
 	var pv *v1.PersistentVolume
 

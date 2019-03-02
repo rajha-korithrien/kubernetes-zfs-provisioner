@@ -7,7 +7,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/simt2/go-zfs"
 	"github.com/spf13/viper"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -19,7 +18,6 @@ import (
 	"os/exec"
 	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	"strings"
-	"time"
 )
 
 const (
@@ -133,53 +131,11 @@ func main() {
 		}).Fatal("Could not determine the host of the provisioner")
 	}
 
-	//first we need to know the number of nodes in the cluster, we expect to be running 1 provisioner
-	//with a given name per cluster node
-	nodes, err := clientset.CoreV1().Nodes().List(metav1.ListOptions{})
-	if err != nil {
-		log.Fatalf("Unable to get cluster node list: %v", err)
-	}
-	nodeCount := len(nodes.Items)
-	log.Infof("Cluster is determined to have a node count of: %v", nodeCount)
-	//Get ahold of the configMap we are going to use to hold our sync information
-	namespace := viper.GetString("provisioner_namespace")
-	mapName := viper.GetString("provisioner_config_map_name")
-	syncMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(mapName, metav1.GetOptions{})
-	if err != nil {
-		log.Fatalf("Could not access configMap %v in namespace %v due to %v", mapName, namespace, err)
-	}
-
 	alphaId := strings.Replace(provisionerName+"-"+hostname, "/", "-", -1)
-	if syncMap.Data == nil {
-		syncMap.Data = make(map[string]string)
-	}
-	syncMap.Data[alphaId] = time.Now().String()
-	syncMap, err = clientset.CoreV1().ConfigMaps(namespace).Update(syncMap)
-	if err != nil {
-		log.Fatalf("Unable to update configMap %v with id: %v due to: %v", mapName, alphaId, err)
-	}
-	for len(syncMap.Data) < nodeCount {
-		time.Sleep(5 * time.Second)
-		syncMap, err = clientset.CoreV1().ConfigMaps(namespace).Get(mapName, metav1.GetOptions{})
-		if err != nil {
-			log.Fatalf("Unable to get configMap during initialization phase: %v", err)
-		}
-		log.Infof("During initialization phase configMap length: %v waiting until: %v", len(syncMap.Data), nodeCount)
-	}
-
-	currentId := 0
-	idMap := make(map[string]int)
-	for key, _ := range syncMap.Data {
-		idMap[key] = currentId
-		currentId++
-	}
-
-	numericId := idMap[alphaId]
-	log.Infof("Completed configMap initialization. AlphaId: %v and numericId: %v with total nodes: %v", alphaId, numericId, len(idMap))
 
 	// Create the provisioner
 	zfsProvisioner := provisioner.NewZFSProvisioner(parent, viper.GetString("share_options"), viper.GetString("server_hostname"),
-		hostname, viper.GetString("kube_reclaim_policy"), viper.GetBool("enable_export"), numericId, len(idMap))
+		hostname, viper.GetString("kube_reclaim_policy"), viper.GetBool("enable_export"), alphaId)
 
 	// Start and export the prometheus collector
 	registry := prometheus.NewPedanticRegistry()

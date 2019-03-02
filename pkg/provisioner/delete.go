@@ -13,11 +13,11 @@ import (
 
 // Delete removes a given volume from the server
 func (p ZFSProvisioner) Delete(volume *v1.PersistentVolume) error {
-	ann, ok := volume.Annotations[provisionerIdKey]
+	ann, ok := volume.Annotations[idKey]
 	if !ok {
 		return errors.New("identity annotation not found on PV")
 	}
-	if ann != p.identity {
+	if ann != p.provisionerHost {
 		return &controller.IgnoredError{"identity annotation on PV does not match ours"}
 	}
 	err := p.deleteVolume(volume)
