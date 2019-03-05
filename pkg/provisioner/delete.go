@@ -17,7 +17,7 @@ func (p ZFSProvisioner) Delete(volume *v1.PersistentVolume) error {
 	if !ok {
 		return errors.New("identity annotation not found on PV")
 	}
-	if ann != p.provisionerHost {
+	if ann != p.alphaId {
 		return &controller.IgnoredError{"identity annotation on PV does not match ours"}
 	}
 	err := p.deleteVolume(volume)

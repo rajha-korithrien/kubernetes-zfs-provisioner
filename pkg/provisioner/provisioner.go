@@ -42,6 +42,47 @@ type ZFSProvisioner struct {
 	client *kubernetes.Clientset //used to allow us to access objects in kubernetes for syncing/locking
 }
 
+// declineProvisionRequest is used to remove an entry in the claimMap that indicates this provisioner handled a provision request.
+//
+// This is useful when the provisioner gets its information added to the map as handling a specific provision, but then
+// an error occurs and the provisioner can not actually produce the desired provision result. Things can happen in this order
+// because we don't have an explicit lock around which provisioner handles a given provision, just versioning information
+// on the configMap we use to hold provision claims.
+//
+// This function normally doesn't return anything but will return an error if an error occurs.
+func (p ZFSProvisioner) declineProvisionRequest(claimMapNamespace string, claimMapName string, pvcName string, timestamp int64) error {
+	claimMap, err := p.client.CoreV1().ConfigMaps(claimMapNamespace).Get(claimMapName, metav1.GetOptions{})
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to get claim configMap: %v in namespace: %v due to: %v",
+			p.alphaId, claimMapName, claimMapNamespace, err)
+		return err
+	}
+	if claimMap.Data == nil {
+		claimMap.Data = make(map[string]string)
+	}
+	_, ok := claimMap.Data[pvcName]
+	if !ok {
+		log.Errorf("Provisioner: %v was asked to decline to process claim: %v but didn't find that claim in the claimMap",
+			p.alphaId, pvcName)
+		return errors.New("Provisioner: " + p.alphaId + " was asked to decline to process claim: " + pvcName +
+			" but didn't find that claim in the claimMap")
+	}
+	claimMap.Data[p.alphaId] = strconv.FormatInt(timestamp, 10)
+	delete(claimMap.Data, p.alphaId)
+	claimMap, err = p.client.CoreV1().ConfigMaps(claimMapNamespace).Update(claimMap)
+	if err != nil {
+		if strings.Contains(err.Error(), "the object has been modified; please apply your changes to the latest version and try again") {
+			log.Infof("Provisioner: %v tried to decline claim provision request: %v but the configMap %v has changed... trying again",
+				p.alphaId, pvcName, claimMapName)
+			return p.declineProvisionRequest(claimMapNamespace, claimMapName, pvcName, timestamp)
+		}
+		log.Errorf("Provisioner: %v was unable to update configMap: %v for a decline in namespace %v due to: %v", p.alphaId,
+			claimMapName, claimMapNamespace, err)
+		return err
+	}
+	return nil
+}
+
 // claimProvisionRequest is used to inform other provisioners that this provisioner is going to handle the given provision request.
 //
 // Provision requests get handled by exactly 1 provisioner but the cluster is running some number of provisioners for any
@@ -103,7 +144,7 @@ func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMap
 				p.alphaId, pvcName, claimMapName)
 			return p.claimProvisionRequest(claimMapNamespace, claimMapName, pvcName)
 		}
-		log.Errorf("Provisioner: %v was unable to update configMap: %v in namespace %v due to: %v", p.alphaId,
+		log.Errorf("Provisioner: %v was unable to update configMap: %v in namespace %v for a claim due to: %v", p.alphaId,
 			claimMapName, claimMapNamespace, err)
 		return false, -1, err
 	}
@@ -219,7 +260,6 @@ func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname 
 		provisionerHost: provisionerHostName,
 		alphaId:         alphaId,
 		client:          kubernetes,
-		rpcPath:         "/lock",
 
 		persistentVolumeCapacity: prometheus.NewDesc(
 			"zfs_provisioner_persistent_volume_capacity",

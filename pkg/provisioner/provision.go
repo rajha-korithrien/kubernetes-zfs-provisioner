@@ -35,6 +35,14 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 
 	path, err := p.createVolume(options)
 	if err != nil {
+		declineErr := p.declineProvisionRequest(claimMapNamespace, claimMapName, options.PVName, previousTimestamp)
+		if declineErr != nil {
+			log.Errorf("Provisioner: %v was unable to correctly decline failed provision for: %v administrator "+
+				"intervention is needed to remove the key: %v from the configMap %v in namespace %v. Anything that needs this claim "+
+				"will not deploy until this administrative action is taken.",
+				p.alphaId, options.PVName, options.PVName, claimMapName, claimMapNamespace)
+			return nil, err
+		}
 		return nil, err
 	}
 	log.WithFields(log.Fields{
@@ -44,7 +52,7 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 	// See nfs provisioner in github.com/kubernetes-incubator/external-storage for why we annotate this way and if it's still allowed
 	annotations := make(map[string]string)
 	annotations[annCreatedBy] = createdBy
-	annotations[idKey] = p.provisionerHost
+	annotations[idKey] = p.alphaId
 
 	var pv *v1.PersistentVolume
 
@@ -92,19 +100,9 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 		}
 	}
 
-	//Now that we have a correctly provisioned claim, we need to update the map of handled claims and unlock the lock
-	err = p.updateHandledProvisionInfo(options.PVName, provisionMapNamespace, provisionMapName)
-	if err != nil && pv != nil {
-		log.Errorf("Provisioner: %v correctly provisioned request %v but was unable to update the provision map, so the volume was deleted, and provisioning registered as failed.", p.alphaId, options.PVName)
-		delError := p.deleteVolume(pv)
-		log.Errorf("Provisioner: %v had a further error while deleting correctly provisioned volume %v which was %v", p.alphaId, options.PVName, delError)
-		return nil, err
-	}
 	log.Debug("Returning pv:")
 	log.Debug(*pv)
 
-	//and lastly we unlock on successful provisioning
-	dsyncMutex.Unlock()
 	return pv, nil
 }
 
