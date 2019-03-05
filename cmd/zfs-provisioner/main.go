@@ -135,7 +135,7 @@ func main() {
 
 	// Create the provisioner
 	zfsProvisioner := provisioner.NewZFSProvisioner(parent, viper.GetString("share_options"), viper.GetString("server_hostname"),
-		hostname, viper.GetString("kube_reclaim_policy"), viper.GetBool("enable_export"), alphaId)
+		hostname, viper.GetString("kube_reclaim_policy"), viper.GetBool("enable_export"), alphaId, clientset)
 
 	// Start and export the prometheus collector
 	registry := prometheus.NewPedanticRegistry()

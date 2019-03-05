@@ -2,19 +2,17 @@ package provisioner
 
 import (
 	"fmt"
-	"log"
+	log "github.com/Sirupsen/logrus"
+	"github.com/minio/dsync"
 	"net"
 	"net/http"
 	"net/rpc"
 	"path"
 	"strconv"
 	"sync"
-
-	"github.com/minio/dsync"
 )
 
 const WriteLock = -1
-const serviceEndpointPrefix = "/lockserver-"
 
 type LockServer struct {
 	mutex   sync.Mutex
@@ -46,29 +44,28 @@ func (l *LockServer) Unlock(args *dsync.LockArgs, reply *bool) error {
 	return nil
 }
 
-func StartLockServer(port int) {
+func StartLockServer(port int, rpcEndpoint string) {
 	lockServer := &LockServer{
 		mutex:   sync.Mutex{},
 		lockMap: make(map[string]int64),
 	}
 
 	portString := strconv.Itoa(port)
-	rpcPath := serviceEndpointPrefix + portString
 
 	rpcServer := rpc.NewServer()
 	err := rpcServer.RegisterName("LockServer", lockServer)
 	if err != nil {
 		log.Fatalf("unable to register name: %v", err)
 	}
-	rpcServer.HandleHTTP(rpcPath, path.Join(rpcPath, "_authlocker"))
+	rpcServer.HandleHTTP(rpcEndpoint, path.Join(rpcEndpoint, "_zfsProvisioner"))
 
 	listener, err := net.Listen("tcp", ":"+portString)
 	if err == nil {
-		log.Println("LockServer listening at port", port, "under", rpcPath)
+		log.Infof("LockServer listening at port: %v under path: %v", port, rpcEndpoint)
 		http.Serve(listener, nil)
 		// It never returns so error handling only happens if something goes wrong
 	}
 
-	log.Println("Unable to start LockServer on port", port, "under", rpcPath)
+	log.Errorf("Unable to start LockServer on port %v under path %v", port, rpcEndpoint)
 	log.Fatal("error:", err)
 }
