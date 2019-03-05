@@ -1,6 +1,7 @@
 package provisioner
 
 import (
+	"encoding/json"
 	"errors"
 	log "github.com/Sirupsen/logrus"
 	"github.com/prometheus/client_golang/prometheus"
@@ -8,22 +9,19 @@ import (
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"reflect"
 	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const (
-	annCreatedBy               = "kubernetes.io/createdby"
-	createdBy                  = "zfs-provisioner"
-	idKey                      = "zfs-provisioner-id"
-	totalCountParam            = "zfs-provisioner-total-count"
-	lockPortParam              = "zfs-provisioner-lock-port"
-	lockMapNamespaceParam      = "zfs-provisioner-lock-namespace"
-	lockMapNameParam           = "zfs-provisioner-lock-name"
-	provisionMapNamespaceParam = "zfs-provisioner-pvc-map-namespace"
-	provisionMapNameParam      = "zfs-provisioner-pvc-map-name"
+	annCreatedBy           = "kubernetes.io/createdby"
+	createdBy              = "zfs-provisioner"
+	idKey                  = "zfs-provisioner-id"
+	claimMapNamespaceParam = "zfs-provisioner-claimMap-namespace"
+	claimMapNameParam      = "zfs-provisioner-claimMap-name"
+	provisionersListingKey = "zfs-provisioners-listing"
 )
 
 // ZFSProvisioner implements the Provisioner interface to create and export ZFS volumes
@@ -42,8 +40,102 @@ type ZFSProvisioner struct {
 	alphaId         string //used to provide a unique kubernetes configmap key safe id for this provisioner
 
 	client *kubernetes.Clientset //used to allow us to access objects in kubernetes for syncing/locking
+}
 
-	rpcPath string //used to create the rpc end point for communicating distributed mutex operations
+// claimProvisionRequest is used to inform other provisioners that this provisioner is going to handle the given provision request.
+//
+// Provision requests get handled by exactly 1 provisioner but the cluster is running some number of provisioners for any
+// given storageClass. As such we need a way to ensure that only one provisioner actually goes through the work of provisioning
+// the volume for a given request. To do this, we use a Kubernetes configMap because the kubernetes api provides an
+// Optimistic Concurrency Control mechanism which we can use to ensure only 1 provision will actually handle a provision request.
+//
+// This function will return true and the timestamp this provisioner last handled a provision request if the provision request was correctly claimed,
+// false and -1 if the provision request has already been claimed or this provisioner should not claim it, or
+// false and -1 with an error if we can not determine the claim status.
+func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMapName string, pvcName string) (bool, int64, error) {
+	claimMap, err := p.client.CoreV1().ConfigMaps(claimMapNamespace).Get(claimMapName, metav1.GetOptions{})
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to get claim configMap: %v in namespace: %v due to: %v",
+			p.alphaId, claimMapName, claimMapNamespace, err)
+		return false, -1, err
+	}
+	if claimMap.Data == nil {
+		claimMap.Data = make(map[string]string)
+	}
+	if _, ok := claimMap.Data[pvcName]; ok {
+		//the provision request is already in the configMap, we don't need to do anything
+		return false, -1, nil
+	}
+	rawProvisionerList, ok := claimMap.Data[provisionersListingKey]
+	if !ok {
+		log.Errorf("Provisioner: %v was unable to get the raw list of active provisioners from configMap: %v in namespace: %v because key: %v was not found",
+			p.alphaId, claimMapName, claimMapNamespace, provisionersListingKey)
+		return false, -1, errors.New("provisioner: " + p.alphaId + " was unable to get the raw list of active provisioners from configMap: " +
+			claimMapName + " in namespace: " + claimMapNamespace + " because key: " + provisionersListingKey + " was not found")
+	}
+	var provisionerList []string
+	err = json.Unmarshal([]byte(rawProvisionerList), &provisionerList)
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to decode the raw list of active provisioners: %v due to %v", p.alphaId, rawProvisionerList, err)
+		return false, -1, err
+	}
+	lastProvisioner, lastProvisionTimestamp, err := determineLastProvisioner(claimMap.Data, provisionerList)
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to determine which provisioner last handled a provision request due to: %v", p.alphaId, err)
+		return false, -1, err
+	}
+	if lastProvisioner == p.alphaId {
+		//this provisioner is the provisioner to last handle a provision, so we should not handle this one
+		return false, -1, nil
+	}
+	//At this point we think we can handle this provision request, we try to update the configMap and if the update
+	//succeeds, we are now responsible for the claim. If the update fails due to the configMap changing (perhaps someone
+	//else got the claim, or someone else handled another different claim) call claimProvisionRequest again this recursive
+	//call will keep occurring until:
+	//a) we get the claim or
+	//b) someone else gets the claim
+	claimMap.Data[pvcName] = p.alphaId
+	claimMap.Data[p.alphaId] = strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
+	claimMap, err = p.client.CoreV1().ConfigMaps(claimMapNamespace).Update(claimMap)
+	if err != nil {
+		if strings.Contains(err.Error(), "the object has been modified; please apply your changes to the latest version and try again") {
+			log.Infof("Provisioner: %v tried to claim provision request: %v but the configMap %v has changed... trying again",
+				p.alphaId, pvcName, claimMapName)
+			return p.claimProvisionRequest(claimMapNamespace, claimMapName, pvcName)
+		}
+		log.Errorf("Provisioner: %v was unable to update configMap: %v in namespace %v due to: %v", p.alphaId,
+			claimMapName, claimMapNamespace, err)
+		return false, -1, err
+	}
+	return true, lastProvisionTimestamp, nil
+}
+
+// determineLastProvisioner is used to find the alphaId of the provisioner that last serviced a provision request.
+//
+// The configMap we use to hold provision requests (the request names are keys) also holds the alphaId of each provisioner (as a key)
+// the names of the provisioners and the names of the provision requests are of different formats so there is no worry about
+// a collision. Each alphaId should have a unix timestamp (in milliseconds) as its value. This timestamp is when the provisioner with
+// the id as the key last handled a provision request.
+//
+// This function returns the alphaId of the provisioner with the largest timestamp in the map and the timestamp of its provisioning
+// or "", -1 and an error if we are unable to determine any such provisioner.
+func determineLastProvisioner(claimMap map[string]string, provisioners []string) (string, int64, error) {
+	var largestTimestamp int64 = 0
+	var lastProvisioner string
+	for _, provisioner := range provisioners {
+		if rawTime, ok := claimMap[provisioner]; ok {
+			var err error = nil
+			current, err := strconv.ParseInt(rawTime, 10, 64)
+			if err != nil {
+				return "", -1, errors.New("unable to parse: " + rawTime + " for provisioner entry: " + provisioner)
+			}
+			if current > largestTimestamp {
+				largestTimestamp = current
+				lastProvisioner = provisioner
+			}
+		}
+	}
+	return lastProvisioner, largestTimestamp, nil
 }
 
 // getProvisionMapInfo is used to get the kubernetes namespace and name of the config map used to track what provisions have been made.
@@ -54,158 +146,16 @@ type ZFSProvisioner struct {
 //
 // The first return value is the namespace, the second value is the name, the third is an error indicating that we were not
 // passed proper configuration parameters.
-func (p ZFSProvisioner) getProvisionMapInfo(options controller.VolumeOptions) (string, string, error) {
-	namespace, ok := options.Parameters[provisionMapNamespaceParam]
+func (p ZFSProvisioner) getClaimMapInfo(options controller.VolumeOptions) (string, string, error) {
+	namespace, ok := options.Parameters[claimMapNamespaceParam]
 	if !ok {
-		return "", "", errors.New("didn't find parameter " + provisionMapNamespaceParam + " specifying the namespace that holds the configmap that tracks what provisions have been accomplished")
+		return "", "", errors.New("didn't find parameter " + claimMapNamespaceParam + " specifying the namespace that holds the configmap that tracks what provisions have been accomplished")
 	}
-	name, ok := options.Parameters[provisionMapNameParam]
+	name, ok := options.Parameters[claimMapNameParam]
 	if !ok {
-		return "", "", errors.New("didn't find parameter " + provisionMapNameParam + " specifying the names of the configmap that tracks what provisions have been accomplished")
+		return "", "", errors.New("didn't find parameter " + claimMapNameParam + " specifying the names of the configmap that tracks what provisions have been accomplished")
 	}
 	return namespace, name, nil
-}
-
-// checkAlreadyProvisioned is used to find out if a given provision request has already been handled and if so who handled it.
-//
-// we use a kubernetes configMap to hold provision request names (as keys) and the provisioner id that handled them (values)
-// this method will look for a given pvcName as a key in the configMap and if it is found it will return true and the value
-// associated with the given pvcName
-func (p ZFSProvisioner) checkAlreadyProvisioned(pvcName string, mapNamespace string, mapName string) (bool, string, error) {
-	pvcMap, err := p.client.CoreV1().ConfigMaps(mapNamespace).Get(mapName, metav1.GetOptions{})
-	if err != nil {
-		log.Errorf("unable to get config map %v in namespace %v due to: %v", mapName, mapNamespace, err)
-		return false, "", errors.New("unable to get pvc handling information configmap: " + mapName)
-	}
-	if pvcMap.Data == nil {
-		pvcMap.Data = make(map[string]string)
-	}
-	if handledId, ok := pvcMap.Data[pvcName]; ok {
-		return true, handledId, nil
-	}
-	return false, "", nil
-}
-
-// getLastHandledProvisionHandler is used to find out the alphaId of the provisioner that handled the last successfully provisioned provision request.
-//
-// Each correctly handled provision request places an entry into a kubernetes config map with the key of the provision request name
-// and a value of the provisioner. In addition we also place a value at the key "lastHandled" with the alphaId of the provisioner.
-// This key gets checked by this function and if it exists the value at that key is returned. If the key does not exist
-// then the value "" is returned. We return an error when we can't access the kubernetes configMap
-func (p ZFSProvisioner) getLastHandledProvisionHandler(mapNamespace string, mapName string) (string, error) {
-	pvcMap, err := p.client.CoreV1().ConfigMaps(mapNamespace).Get(mapName, metav1.GetOptions{})
-	if err != nil {
-		log.Errorf("unable to get config map %v in namespace %v due to: %v", mapName, mapNamespace, err)
-		return "", errors.New("unable to get pvc handling information configmap: " + mapName)
-	}
-	if pvcMap.Data == nil {
-		pvcMap.Data = make(map[string]string)
-	}
-	lastProvisionerId, ok := pvcMap.Data["lastHandled"]
-	if !ok {
-		return "", nil
-	}
-	return lastProvisionerId, nil
-}
-
-//updateHandledProvisionInfo is used to update the kubernetes configMap that holds what provision requests have been handled.
-//
-// We place the pvcName in the map as a string and the alphaId of the provisioner as a value such that in the future we can
-// check which provisioner handled which provision request.
-// We also update the "lastHandled" key to have the value of the alphaId of the current provisioner.
-// We only return something on an error.
-func (p ZFSProvisioner) updateHandledProvisionInfo(pvcName string, mapNamespace string, mapName string) error {
-	pvcMap, err := p.client.CoreV1().ConfigMaps(mapNamespace).Get(mapName, metav1.GetOptions{})
-	if err != nil {
-		log.Errorf("unable to get config map %v in namespace %v due to: %v", mapName, mapNamespace, err)
-		return errors.New("unable to get pvc handling information configmap: " + mapName)
-	}
-	if pvcMap.Data == nil {
-		pvcMap.Data = make(map[string]string)
-	}
-	pvcMap.Data[pvcName] = p.alphaId
-	pvcMap.Data["lastHandled"] = p.alphaId
-	_, err = p.client.CoreV1().ConfigMaps(mapNamespace).Update(pvcMap)
-	if err != nil {
-		log.Errorf("Provisioner: %v was unable to update the provision handling map %v in namespace %v due to %v", p.alphaId, mapName, mapNamespace, err)
-		return err
-	}
-	return nil
-}
-
-//getLockserversHostnameInfo is used to get the information needed to contact the other provisioners in order to setup a distributed lock.
-//
-// We use a kubernetes configMap to store the hostnames of all the other provisioners running in the cluster.
-// The []string returned is the hostnames of the other provisioners.
-func (p ZFSProvisioner) getLockserversHostnameInfo(configuredCount int, namespace string, name string) ([]string, error) {
-	syncMap, err := p.client.CoreV1().ConfigMaps(namespace).Get(name, metav1.GetOptions{})
-	if err != nil {
-		log.Errorf("unable to get config map %v in namespace %v due to: %v", name, namespace, err)
-		return nil, errors.New("unable to get lock information configmap: " + name)
-	}
-	if syncMap.Data == nil {
-		syncMap.Data = make(map[string]string)
-	}
-	syncMap.Data[p.provisionerHost] = time.Now().String()
-	syncMap, err = p.client.CoreV1().ConfigMaps(namespace).Update(syncMap)
-	if err != nil {
-		log.Errorf("Unable to update configMap %v with id: %v due to: %v", name, p.provisionerHost, err)
-		return nil, errors.New("unable to update lock information configmap: " + name)
-	}
-	for len(syncMap.Data) < configuredCount {
-		time.Sleep(5 * time.Second)
-		syncMap, err = p.client.CoreV1().ConfigMaps(namespace).Get(name, metav1.GetOptions{})
-		if err != nil {
-			log.Errorf("unable to get config map %v in namespace %v due to: %v", name, namespace, err)
-			return nil, errors.New("unable to get lock information configmap: " + name)
-		}
-		log.Infof("During provision phase lock configMap length: %v waiting until: %v", len(syncMap.Data), configuredCount)
-	}
-	keys := reflect.ValueOf(syncMap.Data).MapKeys()
-	hostnames := make([]string, len(keys))
-	for i := 0; i < len(keys); i++ {
-		hostnames[i] = keys[i].String()
-	}
-	return hostnames, nil
-}
-
-//Used to get the configured namespace and name of the config map that will hold the hostnames of the provisioners
-//that we need to use when negotiating distributed locks. Also gets the configured tcp port to use to do distributed
-//lock communication with those provisioners
-//the first thing returned is the namespace of the configMap, the second is the name of the configMap and the third
-//is the tcp port
-func (p ZFSProvisioner) getProvisionerLockConfig(options controller.VolumeOptions) (string, string, int, error) {
-	tmp, ok := options.Parameters[lockPortParam]
-	if !ok {
-		return "", "", -1, errors.New("didn't find parameter " + lockPortParam + " specifying the tcp port to use for lock information sharing")
-	}
-	lockTcpPort, err := strconv.Atoi(tmp)
-	if err != nil {
-		return "", "", -1, errors.New("unable to get get a correct tcp port from parameter value: " + tmp)
-	}
-	namespace, ok := options.Parameters[lockMapNamespaceParam]
-	if !ok {
-		return "", "", -1, errors.New("didn't find parameter " + lockMapNamespaceParam + " specifying the namespace of the configmap that holds distributed lock hostnames")
-	}
-	name, ok := options.Parameters[lockMapNameParam]
-	if !ok {
-		return "", "", -1, errors.New("didn't find parameter " + lockMapNameParam + " specifying the name of the configmap that holds distributed lock hostnames")
-	}
-	return namespace, name, lockTcpPort, nil
-}
-
-//This will look in the given parameters and find the configured number of provisioners that work together
-//under a specific provisioner name. It will provide an error when the configuration can't be found or parsed
-func (p ZFSProvisioner) getConfiguredProvisionerCount(options controller.VolumeOptions) (int, error) {
-	tmp, ok := options.Parameters[totalCountParam]
-	if !ok {
-		return -1, errors.New("didn't find parameter " + totalCountParam + " specifying number of nodes")
-	}
-	totalProvisionerCount, err := strconv.Atoi(tmp)
-	if err != nil {
-		return -1, errors.New("unable to get get a correct provisioner count from parameter value: " + tmp)
-	}
-	return totalProvisionerCount, nil
 }
 
 // Describe implements prometheus.Collector

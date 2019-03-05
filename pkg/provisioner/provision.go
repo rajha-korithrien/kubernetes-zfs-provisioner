@@ -3,7 +3,6 @@ package provisioner
 import (
 	"fmt"
 	log "github.com/Sirupsen/logrus"
-	"github.com/minio/dsync"
 	"github.com/simt2/go-zfs"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -11,113 +10,31 @@ import (
 	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	"strconv"
 	"strings"
-	"time"
 )
-
-var dsyncMutex *dsync.DRWMutex = nil //this is what we use to ensure
 
 // Provision creates a PersistentVolume, sets quota and shares it via NFS.
 func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.PersistentVolume, error) {
 
-	if dsyncMutex == nil && p.client != nil {
-		var rpcPaths []string // list of rpc paths where lock server are serving, because we have distributed lock servers
-		// this will be the same path for all servers
-		configuredCount, err := p.getConfiguredProvisionerCount(options)
-		if err != nil {
-			log.Errorf("Provisioner: %v was unable to get total provisioner count", p.alphaId)
-			return nil, err
-		}
-		namespace, name, tcpPort, err := p.getProvisionerLockConfig(options)
-		if err != nil {
-			log.Errorf("Provisioner: %v was unable to get distributed lock config information", p.alphaId)
-			return nil, err
-		}
-		//At this point we need to start our local lock server so it can talk with the other provisioners
-		//the other provisioners will be clients to this server
-		go StartLockServer(tcpPort, p.rpcPath) //this will start a new thread to service the server
-
-		log.Infof("Continuing after asking LockServer to start. configuredCount: %v namespace: %v name: %v", configuredCount, namespace, name)
-
-		//now we need to start a client that talks to all the other lock servers
-		hostnames, err := p.getLockserversHostnameInfo(configuredCount, namespace, name)
-		if err != nil {
-			log.Errorf("Provisioner: %v was unable to get configured lock data config map", p.alphaId)
-			return nil, err
-		}
-
-		//here we need to use hostnames and tcpPorts to create the rpc clients that get sent
-		//to the dsync.New call
-		hostnamesPorts := make([]string, len(hostnames))
-		for i, _ := range hostnames {
-			hostname := hostnames[i]
-			hostnamesPorts[i] = fmt.Sprintf("%s:%d", hostname, tcpPort)
-		}
-		for i := 0; i < len(hostnamesPorts); i++ {
-			rpcPaths = append(rpcPaths, p.rpcPath) //each listener is using the same tcp port and rpc path
-		}
-
-		log.Infof("Building rpc clients to hosts: %+q", hostnamesPorts)
-		log.Infof("Building rpc clients to paths: %+q", rpcPaths)
-
-		// Initialize net/rpc clients for dsync.
-		var clnts []dsync.NetLocker
-		for i := range hostnamesPorts {
-			clnts = append(clnts, newClient(hostnamesPorts[i], rpcPaths[i]))
-		}
-
-		//Now that we have our rpcClients setup we send them to dsync
-		ds, err := dsync.New(clnts, 0)
-		if err != nil {
-			log.Errorf("Provisioner: %v was unable to create a dsync object", p.alphaId)
-			return nil, err
-		}
-		//We can now use dsync to get a distributed read/write mutex object
-		dsyncMutex = dsync.NewDRWMutex("provision-list", ds)
-	}
-
-	//We loop until we get the lock
-	for !dsyncMutex.GetLock(p.alphaId, "provision.go", time.Second*5) {
-		log.Infof("Provisioner: %v is waiting for lock while processing pvc: %v", p.alphaId, options.PVName)
-	}
-	//From this point on, we *must* unlock the lock when:
-	// 1) an error occurs
-	// 2) when we correctly provision something
-	// 3) when we determine we should not provision something
-
-	//The overview of what is going to happen next:
-	//Now that we have the lock we determine if this provision request has already been serviced or not.
-	//If it has been serviced, we do nothing
-	// if it has not been serviced, we check to see who serviced the last request
-	// if we serviced the last request, we do nothing
-	// if we did not service the last request, we service this request
-	provisionMapNamespace, provisionMapName, err := p.getProvisionMapInfo(options)
+	claimMapNamespace, claimMapName, err := p.getClaimMapInfo(options)
 	if err != nil {
-		log.Errorf("Provisioner: %v was unable to get handled provisions information", p.alphaId)
-		dsyncMutex.Unlock()
+		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
 		return nil, err
 	}
-	alreadyProvisioned, _, err := p.checkAlreadyProvisioned(options.PVName, provisionMapNamespace, provisionMapName)
-	if alreadyProvisioned {
-		dsyncMutex.Unlock()
-		return nil, &controller.IgnoredError{"provision has been handled by the time we got to it"}
-	}
-	lastProvisionerId, err := p.getLastHandledProvisionHandler(provisionMapNamespace, provisionMapName)
+	gotClaim, previousTimestamp, err := p.claimProvisionRequest(claimMapNamespace, claimMapName, options.PVName)
 	if err != nil {
-		log.Errorf("Provisioner: %v was unable to get handled provisions information", p.alphaId)
-		dsyncMutex.Unlock()
+		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
 		return nil, err
 	}
-	if lastProvisionerId == p.alphaId {
-		log.Infof("Provisioner: %v is not handling provision request: %v because it handled the last request", p.alphaId, options.PVName)
-		dsyncMutex.Unlock()
-		return nil, &controller.IgnoredError{"Will not handle provision request because we handled the last request"}
+	if !gotClaim {
+		log.Infof("Provisioner: %v is ignoring provision request: %v because it has already been handled.")
+		return nil, &controller.IgnoredError{"the provision " + options.PVName + " was handled by a different provisioner"}
 	}
-	//At this point we need to actually handle this provision request
-	log.Infof("Provisioning request: %v with provisioner: %v", options.PVName, p.alphaId)
+	//At this point we need to actually handle this provision request it is critical that we correctly handle errors
+	//from this point on. Specifically when an error occurs, we need to remove our entry in the claim map
+	log.Infof("Provisioner: %v will handle provision request: %v", p.alphaId, options.PVName)
 
 	path, err := p.createVolume(options)
 	if err != nil {
-		dsyncMutex.Unlock()
 		return nil, err
 	}
 	log.WithFields(log.Fields{
