@@ -20,13 +20,20 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
 		return nil, err
 	}
+
+	err = p.updateProvisionerListing(claimMapNamespace, claimMapName)
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to put itself into the claim map: %v due to: %v", p.alphaId, claimMapName, err)
+		return nil, err
+	}
+
 	gotClaim, previousTimestamp, err := p.claimProvisionRequest(claimMapNamespace, claimMapName, options.PVName)
 	if err != nil {
 		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
 		return nil, err
 	}
 	if !gotClaim {
-		log.Infof("Provisioner: %v is ignoring provision request: %v because it has already been handled.")
+		log.Infof("Provisioner: %v is ignoring provision request: %v because it has already been handled or is being handled by a different provisioner", p.alphaId, options.PVName)
 		return nil, &controller.IgnoredError{"the provision " + options.PVName + " was handled by a different provisioner"}
 	}
 	//At this point we need to actually handle this provision request it is critical that we correctly handle errors

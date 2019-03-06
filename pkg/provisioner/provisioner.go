@@ -68,7 +68,7 @@ func (p ZFSProvisioner) declineProvisionRequest(claimMapNamespace string, claimM
 			" but didn't find that claim in the claimMap")
 	}
 	claimMap.Data[p.alphaId] = strconv.FormatInt(timestamp, 10)
-	delete(claimMap.Data, p.alphaId)
+	delete(claimMap.Data, pvcName)
 	claimMap, err = p.client.CoreV1().ConfigMaps(claimMapNamespace).Update(claimMap)
 	if err != nil {
 		if strings.Contains(err.Error(), "the object has been modified; please apply your changes to the latest version and try again") {
@@ -80,6 +80,7 @@ func (p ZFSProvisioner) declineProvisionRequest(claimMapNamespace string, claimM
 			claimMapName, claimMapNamespace, err)
 		return err
 	}
+	log.Infof("Provisioner: %v has removed its previous claim to provision: %v", p.alphaId, pvcName)
 	return nil
 }
 
@@ -103,8 +104,9 @@ func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMap
 	if claimMap.Data == nil {
 		claimMap.Data = make(map[string]string)
 	}
-	if _, ok := claimMap.Data[pvcName]; ok {
+	if claimedBy, ok := claimMap.Data[pvcName]; ok {
 		//the provision request is already in the configMap, we don't need to do anything
+		log.Infof("Provisioner: %v has determined that provision request: %v has already been claimed by: %v", p.alphaId, pvcName, claimedBy)
 		return false, -1, nil
 	}
 	rawProvisionerList, ok := claimMap.Data[provisionersListingKey]
@@ -127,6 +129,8 @@ func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMap
 	}
 	if lastProvisioner == p.alphaId {
 		//this provisioner is the provisioner to last handle a provision, so we should not handle this one
+		log.Infof("Provisioner: %v has determined that the last provision was done by: %v at time %v and will not handle current request for: %v",
+			p.alphaId, lastProvisioner, time.Unix(lastProvisionTimestamp*1000, 0).String(), pvcName) //lastProvisionTimestamp is in milliseconds since epoch so we turn it into seconds
 		return false, -1, nil
 	}
 	//At this point we think we can handle this provision request, we try to update the configMap and if the update
@@ -135,8 +139,9 @@ func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMap
 	//call will keep occurring until:
 	//a) we get the claim or
 	//b) someone else gets the claim
+	var nowMills int64 = time.Now().UnixNano() / 1e6 //this gives us a timestamp in milliseconds since epoch
 	claimMap.Data[pvcName] = p.alphaId
-	claimMap.Data[p.alphaId] = strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
+	claimMap.Data[p.alphaId] = strconv.FormatInt(nowMills, 10) //this should give us a timestamp in milliseconds since epoch
 	claimMap, err = p.client.CoreV1().ConfigMaps(claimMapNamespace).Update(claimMap)
 	if err != nil {
 		if strings.Contains(err.Error(), "the object has been modified; please apply your changes to the latest version and try again") {
@@ -148,6 +153,7 @@ func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMap
 			claimMapName, claimMapNamespace, err)
 		return false, -1, err
 	}
+	log.Infof("Provisioner: %v has claimed provision request for: %v at time: %v", p.alphaId, pvcName, time.Unix(nowMills*1000, 0))
 	return true, lastProvisionTimestamp, nil
 }
 
@@ -164,6 +170,7 @@ func determineLastProvisioner(claimMap map[string]string, provisioners []string)
 	var largestTimestamp int64 = 0
 	var lastProvisioner string
 	for _, provisioner := range provisioners {
+		log.Infof("checking for last time of: %v", provisioner)
 		if rawTime, ok := claimMap[provisioner]; ok {
 			var err error = nil
 			current, err := strconv.ParseInt(rawTime, 10, 64)
@@ -197,6 +204,66 @@ func (p ZFSProvisioner) getClaimMapInfo(options controller.VolumeOptions) (strin
 		return "", "", errors.New("didn't find parameter " + claimMapNameParam + " specifying the names of the configmap that tracks what provisions have been accomplished")
 	}
 	return namespace, name, nil
+}
+
+// updateProvisionerListing is used to ensure that this provisioner alphaId is known in the configMap used to track handled provisions.
+func (p ZFSProvisioner) updateProvisionerListing(claimMapNamespace string, claimMapName string) error {
+	claimMap, err := p.client.CoreV1().ConfigMaps(claimMapNamespace).Get(claimMapName, metav1.GetOptions{})
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to get claim configMap: %v in namespace: %v due to: %v",
+			p.alphaId, claimMapName, claimMapNamespace, err)
+		return err
+	}
+	if claimMap.Data == nil {
+		claimMap.Data = make(map[string]string)
+	}
+	var provisionerList []string
+	if rawProvisionerList, ok := claimMap.Data[provisionersListingKey]; ok {
+		err = json.Unmarshal([]byte(rawProvisionerList), &provisionerList)
+		if err != nil {
+			log.Errorf("Provisioner: %v was unable to decode the raw list of active provisioners: %v due to %v", p.alphaId, rawProvisionerList, err)
+			return err
+		}
+	} else {
+		provisionerList = make([]string, 0)
+	}
+
+	if isValueInStringList(p.alphaId, provisionerList) {
+		//our id is already in the data being tracked by the map, so we are done
+		log.Infof("Provisioner: %v has found it is already in the provisioner listings", p.alphaId)
+		return nil
+	}
+
+	//we are here when we need to add our alphaId to the list of data tracked by the map
+	provisionerList = append(provisionerList, p.alphaId)
+	rawBytes, err := json.Marshal(provisionerList)
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to encode the raw list of active provisioners: %v due to %v", p.alphaId, provisionerList, err)
+		return err
+	}
+	claimMap.Data[provisionersListingKey] = string(rawBytes)
+	claimMap, err = p.client.CoreV1().ConfigMaps(claimMapNamespace).Update(claimMap)
+	if err != nil {
+		if strings.Contains(err.Error(), "the object has been modified; please apply your changes to the latest version and try again") {
+			log.Infof("Provisioner: %v tried to update provisioner listings but the configMap %v has changed... trying again",
+				p.alphaId, claimMapName)
+			return p.updateProvisionerListing(claimMapNamespace, claimMapName)
+		}
+		log.Errorf("Provisioner: %v was unable to update configMap: %v in namespace %v for provisioner listing update to: %v", p.alphaId,
+			claimMapName, claimMapNamespace, err)
+		return err
+	}
+	log.Infof("Provisioner: %v has completed updating the provisioner listings", p.alphaId)
+	return nil
+}
+
+func isValueInStringList(value string, list []string) bool {
+	for _, v := range list {
+		if v == value {
+			return true
+		}
+	}
+	return false
 }
 
 // Describe implements prometheus.Collector
