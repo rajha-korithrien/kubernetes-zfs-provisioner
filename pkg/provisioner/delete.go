@@ -1,8 +1,10 @@
 package provisioner
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 
 	log "github.com/Sirupsen/logrus"
 	zfs "github.com/simt2/go-zfs"
@@ -11,6 +13,13 @@ import (
 
 // Delete removes a given volume from the server
 func (p ZFSProvisioner) Delete(volume *v1.PersistentVolume) error {
+	ann, ok := volume.Annotations[idKey]
+	if !ok {
+		return errors.New("identity annotation not found on PV")
+	}
+	if ann != p.alphaId {
+		return &controller.IgnoredError{"identity annotation on PV does not match ours"}
+	}
 	err := p.deleteVolume(volume)
 	if err != nil {
 		return err

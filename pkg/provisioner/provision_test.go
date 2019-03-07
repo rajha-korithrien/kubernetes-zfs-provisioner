@@ -4,22 +4,23 @@ import (
 	"os"
 	"testing"
 
-	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	zfs "github.com/simt2/go-zfs"
 	"github.com/stretchr/testify/assert"
+	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/api/core/v1"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 )
 
 func TestProvision(t *testing.T) {
 	parent, _ := zfs.GetDataset("test/volumes")
-	p := NewZFSProvisioner(parent, "", "127.0.0.1", "", "Delete")
+	p := NewZFSProvisioner(parent, "", "127.0.0.1", "test-id",
+		"Delete", true, "testing-0", nil)
 
 	options := controller.VolumeOptions{
 		PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-		PVName: "pv-testcreate",
-		PVC:    newClaim(resource.MustParse("1G"), []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce, v1.ReadOnlyMany}, nil),
+		PVName:                        "pv-testcreate",
+		PVC:                           newClaim(resource.MustParse("1G"), []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce, v1.ReadOnlyMany}, nil),
 	}
 	pv, err := p.Provision(options)
 

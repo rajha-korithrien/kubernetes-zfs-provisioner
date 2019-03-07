@@ -24,7 +24,6 @@ const (
 	leasePeriod   = controller.DefaultLeaseDuration
 	retryPeriod   = controller.DefaultRetryPeriod
 	renewDeadline = controller.DefaultRenewDeadline
-	//termLimit     = controller.DefaultTermLimit
 )
 
 func main() {
@@ -120,8 +119,18 @@ func main() {
 		}).Fatal("Could not open ZFS parent dataset")
 	}
 
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err,
+		}).Fatal("Could not determine the host of the provisioner")
+	}
+
+	alphaId := strings.Replace(provisionerName+"-"+hostname, "/", "-", -1)
+
 	// Create the provisioner
-	zfsProvisioner := provisioner.NewZFSProvisioner(parent, viper.GetString("share_options"), viper.GetString("server_hostname"), viper.GetString("kube_reclaim_policy"), viper.GetBool("enable_export"))
+	zfsProvisioner := provisioner.NewZFSProvisioner(parent, viper.GetString("share_options"), viper.GetString("server_hostname"),
+		hostname, viper.GetString("kube_reclaim_policy"), viper.GetBool("enable_export"), alphaId, clientset)
 
 	// Start and export the prometheus collector
 	registry := prometheus.NewPedanticRegistry()
@@ -140,25 +149,10 @@ func main() {
 
 	// Start the controller
 	pc := controller.NewProvisionController(clientset, viper.GetString("provisioner_name"), zfsProvisioner,
-		serverVersion.GitVersion, func(provisionController *controller.ProvisionController) error {
-			controller.ExponentialBackOffOnError(false)
-			return nil
-		}, func(provisionController *controller.ProvisionController) error {
-			//The second argument used to be failedRetryThreshold which no longer exists so we try to emulate the behavior
-			//via the failed provision and delete thresholds
-			controller.FailedDeleteThreshold(2)
-			controller.FailedProvisionThreshold(2)
-			return nil
-		}, func(provisionController *controller.ProvisionController) error {
-			controller.LeaseDuration(leasePeriod)
-			return nil
-		}, func(provisionController *controller.ProvisionController) error {
-			controller.RenewDeadline(renewDeadline)
-			return nil
-		}, func(provisionController *controller.ProvisionController) error {
-			controller.RetryPeriod(retryPeriod)
-			return nil
-		})
+		serverVersion.GitVersion, controller.ExponentialBackOffOnError(false),
+		controller.FailedDeleteThreshold(5), controller.FailedProvisionThreshold(5),
+		controller.LeaseDuration(leasePeriod), controller.RenewDeadline(renewDeadline), controller.RetryPeriod(retryPeriod),
+		controller.LeaderElection(false))
 	log.Info("Listening for events via provisioner name: " + provisionerName)
 	pc.Run(wait.NeverStop)
 }
