@@ -131,8 +131,8 @@ func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMap
 	}
 	if leastRecentProvisioner != p.alphaId {
 		//this provisioner is the provisioner to least recent handle a provision, so we should not handle this one
-		log.Infof("Provisioner: %v has determined that the least recent provision was done by: %v at time %v and will therefore not handle current request for: %v",
-			p.alphaId, leastRecentProvisioner, time.Unix(leastRecentProvisionTimestamp*1000, 0).String(), pvcName) //lastProvisionTimestamp is in milliseconds since epoch so we turn it into seconds
+		log.Infof("Provisioner: %v will not handle provision request: %v because %v has a timestamp furthest in the past of: %v",
+			p.alphaId, pvcName, leastRecentProvisioner, time.Unix(leastRecentProvisionTimestamp/1000, 0).String(), pvcName) //lastProvisionTimestamp is in milliseconds since epoch so we turn it into seconds
 		return false, -1, nil
 	}
 	//At this point we think we can handle this provision request, we try to update the configMap and if the update
@@ -155,7 +155,7 @@ func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMap
 			claimMapName, claimMapNamespace, err)
 		return false, -1, err
 	}
-	log.Infof("Provisioner: %v has claimed provision request for: %v at time: %v", p.alphaId, pvcName, time.Unix(nowMills*1000, 0))
+	log.Infof("Provisioner: %v has claimed provision request for: %v at time: %v", p.alphaId, pvcName, time.Unix(nowMills/1000, 0))
 	return true, leastRecentProvisionTimestamp, nil
 }
 
@@ -314,7 +314,7 @@ func (p ZFSProvisioner) updateProvisionerListing(claimMapNamespace string, claim
 		return err
 	}
 	log.Infof("Provisioner: %v has completed updating the provisioner listings with time: %v",
-		p.alphaId, time.Unix(nowMills*1000, 0))
+		p.alphaId, time.Unix(nowMills/1000, 0))
 	return nil
 }
 
