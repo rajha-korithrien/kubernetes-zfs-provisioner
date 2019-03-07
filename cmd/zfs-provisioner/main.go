@@ -21,12 +21,9 @@ import (
 )
 
 const (
-	leasePeriod          = controller.DefaultLeaseDuration
-	retryPeriod          = controller.DefaultRetryPeriod
-	renewDeadline        = controller.DefaultRenewDeadline
-	provisionerNamespace = "zfs-provisioner"
-	provisionerSyncMap   = "zfs-provisioner-config"
-	//termLimit     = controller.DefaultTermLimit
+	leasePeriod   = controller.DefaultLeaseDuration
+	retryPeriod   = controller.DefaultRetryPeriod
+	renewDeadline = controller.DefaultRenewDeadline
 )
 
 func main() {
@@ -43,8 +40,6 @@ func main() {
 	viper.SetDefault("debug", false)
 	viper.SetDefault("enable_export", true)
 	viper.SetDefault("create_unique_name", false)
-	viper.SetDefault("provisioner_namespace", provisionerNamespace)
-	viper.SetDefault("provisioner_config_map_name", provisionerSyncMap)
 
 	if viper.GetBool("debug") == true {
 		log.SetLevel(log.DebugLevel)
