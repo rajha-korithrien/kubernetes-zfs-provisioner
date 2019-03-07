@@ -15,45 +15,53 @@ import (
 // Provision creates a PersistentVolume, sets quota and shares it via NFS.
 func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.PersistentVolume, error) {
 
+	//First we check to see if anything tells us what node should actually do the provisioning. So far this has never worked
 	if options.SelectedNode != nil {
 		log.Infof("Provisioner: %v has been given a provision request with SelectedNode: %v", p.alphaId, options.SelectedNode.Name)
 	} else {
 		log.Warnf("Provisioner: %v has been given a provision request with a nil SelectedNode", p.alphaId)
 	}
 
+	//Now we get from the storageClass config, how many provisioners are servicing provision requests associated with the storage class
 	count, err := p.getConfiguredProvisionerCount(options)
 	if err != nil {
 		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
 		return nil, err
 	}
 
+	//Now we get from the storageClass config, the namespace and name of the configMap we should use for holding claim info
 	claimMapNamespace, claimMapName, err := p.getClaimMapInfo(options)
 	if err != nil {
 		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
 		return nil, err
 	}
 
-	err = p.waitForConfiguredProvisioners(claimMapNamespace, claimMapName, count)
-	if err != nil {
-		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
-		return nil, err
-	}
-
+	//Now we ensure that our information ends up in the claim map
 	err = p.updateProvisionerListing(claimMapNamespace, claimMapName)
 	if err != nil {
 		log.Errorf("Provisioner: %v was unable to put itself into the claim map: %v due to: %v", p.alphaId, claimMapName, err)
 		return nil, err
 	}
 
+	//Now we wait for everyone else to get their info into the claim map
+	err = p.waitForConfiguredProvisioners(claimMapNamespace, claimMapName, count)
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
+		return nil, err
+	}
+
+	//Now we see if we get the ability to provision this claim
 	gotClaim, previousTimestamp, err := p.claimProvisionRequest(claimMapNamespace, claimMapName, options.PVName)
 	if err != nil {
 		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
 		return nil, err
 	}
 	if !gotClaim {
+		//We should not provision this claim
 		log.Infof("Provisioner: %v is ignoring provision request: %v because it has already been handled or is being handled by a different provisioner", p.alphaId, options.PVName)
 		return nil, &controller.IgnoredError{"the provision " + options.PVName + " was handled by a different provisioner"}
 	}
+
 	//At this point we need to actually handle this provision request it is critical that we correctly handle errors
 	//from this point on. Specifically when an error occurs, we need to remove our entry in the claim map
 	log.Infof("Provisioner: %v will handle provision request: %v", p.alphaId, options.PVName)
