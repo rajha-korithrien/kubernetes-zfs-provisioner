@@ -9,6 +9,7 @@ import (
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"math"
 	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ const (
 	idKey                  = "zfs-provisioner-id"
 	claimMapNamespaceParam = "zfs-provisioner-claimMap-namespace"
 	claimMapNameParam      = "zfs-provisioner-claimMap-name"
+	provisionerCountParam  = "zfs-provisioner-count"
 	provisionersListingKey = "zfs-provisioners-listing"
 )
 
@@ -122,15 +124,15 @@ func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMap
 		log.Errorf("Provisioner: %v was unable to decode the raw list of active provisioners: %v due to %v", p.alphaId, rawProvisionerList, err)
 		return false, -1, err
 	}
-	lastProvisioner, lastProvisionTimestamp, err := determineLastProvisioner(claimMap.Data, provisionerList)
+	leastRecentProvisioner, leastRecentProvisionTimestamp, err := determineLeastRecentProvisioner(claimMap.Data, provisionerList)
 	if err != nil {
 		log.Errorf("Provisioner: %v was unable to determine which provisioner last handled a provision request due to: %v", p.alphaId, err)
 		return false, -1, err
 	}
-	if lastProvisioner == p.alphaId {
-		//this provisioner is the provisioner to last handle a provision, so we should not handle this one
-		log.Infof("Provisioner: %v has determined that the last provision was done by: %v at time %v and will not handle current request for: %v",
-			p.alphaId, lastProvisioner, time.Unix(lastProvisionTimestamp*1000, 0).String(), pvcName) //lastProvisionTimestamp is in milliseconds since epoch so we turn it into seconds
+	if leastRecentProvisioner != p.alphaId {
+		//this provisioner is the provisioner to least recent handle a provision, so we should not handle this one
+		log.Infof("Provisioner: %v has determined that the least recent provision was done by: %v at time %v and will therefore not handle current request for: %v",
+			p.alphaId, leastRecentProvisioner, time.Unix(leastRecentProvisionTimestamp*1000, 0).String(), pvcName) //lastProvisionTimestamp is in milliseconds since epoch so we turn it into seconds
 		return false, -1, nil
 	}
 	//At this point we think we can handle this provision request, we try to update the configMap and if the update
@@ -154,21 +156,21 @@ func (p ZFSProvisioner) claimProvisionRequest(claimMapNamespace string, claimMap
 		return false, -1, err
 	}
 	log.Infof("Provisioner: %v has claimed provision request for: %v at time: %v", p.alphaId, pvcName, time.Unix(nowMills*1000, 0))
-	return true, lastProvisionTimestamp, nil
+	return true, leastRecentProvisionTimestamp, nil
 }
 
-// determineLastProvisioner is used to find the alphaId of the provisioner that last serviced a provision request.
+// determineLeastRecentProvisioner is used to find the alphaId of the provisioner that least recently serviced a provision request.
 //
 // The configMap we use to hold provision requests (the request names are keys) also holds the alphaId of each provisioner (as a key)
 // the names of the provisioners and the names of the provision requests are of different formats so there is no worry about
 // a collision. Each alphaId should have a unix timestamp (in milliseconds) as its value. This timestamp is when the provisioner with
 // the id as the key last handled a provision request.
 //
-// This function returns the alphaId of the provisioner with the largest timestamp in the map and the timestamp of its provisioning
-// or "", -1 and an error if we are unable to determine any such provisioner.
-func determineLastProvisioner(claimMap map[string]string, provisioners []string) (string, int64, error) {
-	var largestTimestamp int64 = 0
-	var lastProvisioner string
+// This function returns the alphaId of the provisioner with the smallest timestamp in the map, its associated
+// timestamp and nil or "", -1 and an error if we are unable to determine any such provisioner.
+func determineLeastRecentProvisioner(claimMap map[string]string, provisioners []string) (string, int64, error) {
+	var smallestTimestamp int64 = math.MaxInt64
+	var leastRecentProvisioner string
 	for _, provisioner := range provisioners {
 		log.Infof("checking for last time of: %v", provisioner)
 		if rawTime, ok := claimMap[provisioner]; ok {
@@ -177,13 +179,39 @@ func determineLastProvisioner(claimMap map[string]string, provisioners []string)
 			if err != nil {
 				return "", -1, errors.New("unable to parse: " + rawTime + " for provisioner entry: " + provisioner)
 			}
-			if current > largestTimestamp {
-				largestTimestamp = current
-				lastProvisioner = provisioner
+			if current < smallestTimestamp {
+				smallestTimestamp = current
+				leastRecentProvisioner = provisioner
 			}
 		}
 	}
-	return lastProvisioner, largestTimestamp, nil
+	if smallestTimestamp == math.MaxInt64 {
+		//the only way this can happen is if no provisioners have their alphaId as a key in the map
+		//and that should not be possible because the initialization code for putting a provisioner into the list
+		//should also populate the map
+		log.Fatalf("when trying to determine least recent provisioner didn't find any provisioners in the map")
+	}
+	return leastRecentProvisioner, smallestTimestamp, nil
+}
+
+// getConfiguredProvisionerCount is used to get the number of provisioners configure to work servicing requests associated with a specific storageClass.
+//
+// Kubernetes uses the storageClass object as the mechanism to associate provisioners with provision requests. Any number
+// of provisioners can be configured to respond to requests issued against a given storageClass. We need to have the user
+// of the storageClass that feeds provisioners configure how many provisioners back their storageClass.
+//
+// Returns a count of the configured numbers of provisioners and nil or -1 and an error if we can't determine the configured
+// number of provisioners
+func (p ZFSProvisioner) getConfiguredProvisionerCount(options controller.VolumeOptions) (int, error) {
+	rawCount, ok := options.Parameters[provisionerCountParam]
+	if !ok {
+		return -1, errors.New("provisioner: " + p.alphaId + " didn't find parameter " + provisionerCountParam + " specifying the number of provisioners backing the storageClass")
+	}
+	count, err := strconv.Atoi(rawCount)
+	if err != nil {
+		return -1, errors.New("provisioner: " + p.alphaId + " was unable to parse count parameter as int got: " + rawCount)
+	}
+	return count, nil
 }
 
 // getProvisionMapInfo is used to get the kubernetes namespace and name of the config map used to track what provisions have been made.
@@ -204,6 +232,36 @@ func (p ZFSProvisioner) getClaimMapInfo(options controller.VolumeOptions) (strin
 		return "", "", errors.New("didn't find parameter " + claimMapNameParam + " specifying the names of the configmap that tracks what provisions have been accomplished")
 	}
 	return namespace, name, nil
+}
+
+// waitForConfiguredProvisioners is used to cause a provisioner to wait until all configured provisioners have registered
+func (p ZFSProvisioner) waitForConfiguredProvisioners(claimMapNamespace string, claimMapName string, count int) error {
+	var provisionerList []string = make([]string, 0)
+	for len(provisionerList) < count {
+		claimMap, err := p.client.CoreV1().ConfigMaps(claimMapNamespace).Get(claimMapName, metav1.GetOptions{})
+		if err != nil {
+			log.Errorf("Provisioner: %v was unable to get claim configMap: %v in namespace: %v due to: %v",
+				p.alphaId, claimMapName, claimMapNamespace, err)
+			return err
+		}
+		if claimMap.Data == nil {
+			claimMap.Data = make(map[string]string)
+		}
+
+		if rawProvisionerList, ok := claimMap.Data[provisionersListingKey]; ok {
+			err = json.Unmarshal([]byte(rawProvisionerList), &provisionerList)
+			if err != nil {
+				log.Errorf("Provisioner: %v was unable to decode the raw list of active provisioners: %v due to %v", p.alphaId, rawProvisionerList, err)
+				return err
+			}
+		}
+		if len(provisionerList) < count {
+			log.Infof("Provisioner: %v has seen %v other provisioners but is configured to need: %v waiting...", p.alphaId,
+				len(provisionerList), count)
+			time.Sleep(time.Second * 5)
+		}
+	}
+	return nil
 }
 
 // updateProvisionerListing is used to ensure that this provisioner alphaId is known in the configMap used to track handled provisions.
@@ -241,7 +299,9 @@ func (p ZFSProvisioner) updateProvisionerListing(claimMapNamespace string, claim
 		log.Errorf("Provisioner: %v was unable to encode the raw list of active provisioners: %v due to %v", p.alphaId, provisionerList, err)
 		return err
 	}
+	var nowMills int64 = time.Now().UnixNano() / 1e6 //this gives us a timestamp in milliseconds since epoch
 	claimMap.Data[provisionersListingKey] = string(rawBytes)
+	claimMap.Data[p.alphaId] = strconv.FormatInt(nowMills, 10)
 	claimMap, err = p.client.CoreV1().ConfigMaps(claimMapNamespace).Update(claimMap)
 	if err != nil {
 		if strings.Contains(err.Error(), "the object has been modified; please apply your changes to the latest version and try again") {
@@ -253,7 +313,8 @@ func (p ZFSProvisioner) updateProvisionerListing(claimMapNamespace string, claim
 			claimMapName, claimMapNamespace, err)
 		return err
 	}
-	log.Infof("Provisioner: %v has completed updating the provisioner listings", p.alphaId)
+	log.Infof("Provisioner: %v has completed updating the provisioner listings with time: %v",
+		p.alphaId, time.Unix(nowMills*1000, 0))
 	return nil
 }
 

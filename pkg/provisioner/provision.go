@@ -15,7 +15,20 @@ import (
 // Provision creates a PersistentVolume, sets quota and shares it via NFS.
 func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.PersistentVolume, error) {
 
+	log.Infof("Provisioner: %v has been given a provision request with SelectedNode: %v", p.alphaId, options.SelectedNode.Name)
+
+	count, err := p.getConfiguredProvisionerCount(options)
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
+	}
+
 	claimMapNamespace, claimMapName, err := p.getClaimMapInfo(options)
+	if err != nil {
+		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
+		return nil, err
+	}
+
+	err = p.waitForConfiguredProvisioners(claimMapNamespace, claimMapName, count)
 	if err != nil {
 		log.Errorf("Provisioner: %v was unable to provision request: %v due to: %v", p.alphaId, options.PVName, err)
 		return nil, err
