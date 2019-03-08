@@ -117,7 +117,7 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 		nodeSelectors[0].MatchExpressions[0].Key = nodeNameLabel
 		nodeSelectors[0].MatchExpressions[0].Operator = v1.NodeSelectorOpIn
 		nodeSelectors[0].MatchExpressions[0].Values = make([]string, 1)
-		nodeSelectors[0].MatchExpressions[0].Values[0] = p.provisionerHost
+		nodeSelectors[0].MatchExpressions[0].Values[0] = p.kubernetesHostIdentifier
 
 		log.Infof("Provisioner: %v has created VolumeNodeAffinity annotations with key: %v operator: %v and values: %v and has kubernetes node label: %v",
 			p.alphaId, nodeSelectors[0].MatchExpressions[0].Key, nodeSelectors[0].MatchExpressions[0].Operator, nodeSelectors[0].MatchExpressions[0].Values, p.kubernetesHostIdentifier)

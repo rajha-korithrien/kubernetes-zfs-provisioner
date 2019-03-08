@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	leasePeriod   = controller.DefaultLeaseDuration
-	retryPeriod   = controller.DefaultRetryPeriod
-	renewDeadline = controller.DefaultRenewDeadline
+	leasePeriod             = controller.DefaultLeaseDuration
+	retryPeriod             = controller.DefaultRetryPeriod
+	renewDeadline           = controller.DefaultRenewDeadline
+	envNodeComparisonSubnet = "node_comparison_subnet"
 )
 
 func main() {
@@ -43,6 +44,7 @@ func main() {
 	viper.SetDefault("debug", false)
 	viper.SetDefault("enable_export", true)
 	viper.SetDefault("create_unique_name", false)
+	viper.SetDefault(envNodeComparisonSubnet, "192.168.20")
 
 	if viper.GetBool("debug") == true {
 		log.SetLevel(log.DebugLevel)
@@ -144,7 +146,7 @@ func main() {
 	var foundKubernetesNodeName string
 	//first try our hostname as what kubernetes identifies this node by
 	for _, kubernetesNodeName := range kubernetesProvidedNodeNames {
-		log.Infof("Comparing hostname: %v with kubernetes name: %v", hostname, kubernetesNodeName)
+		log.Debugf("Comparing hostname: %v with kubernetes name: %v", hostname, kubernetesNodeName)
 		if hostname == kubernetesNodeName {
 			foundKubernetesNodeName = kubernetesNodeName
 		}
@@ -159,9 +161,15 @@ func main() {
 		}
 		for _, address := range addresses {
 			for _, kubernetesNodeName := range kubernetesProvidedNodeNames {
-				log.Infof("Comparing address: %v with kubernetes name: %v", address.String(), kubernetesNodeName)
-				if address.String() == kubernetesNodeName {
-					foundKubernetesNodeName = address.String()
+				log.Debugf("Comparing address: %v with kubernetes name: %v", address.String(), kubernetesNodeName)
+				if strings.HasPrefix(address.String(), viper.GetString(envNodeComparisonSubnet)) {
+					//We are here when the address from the host is within the user configured subnet to match kubernetes names to host addresses
+					//go provides an address in the form of 192.160.20.20/24 which is to say the /24 at the end is the subnet
+					//specification, kubernetes only provides addresses (when used as host names) as 192.168.20.20
+					tokens := strings.Split(address.String(), "/")
+					if tokens[0] == kubernetesNodeName {
+						foundKubernetesNodeName = tokens[0]
+					}
 				}
 			}
 		}
