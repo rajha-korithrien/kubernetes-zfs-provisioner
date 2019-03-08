@@ -112,6 +112,16 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 			},
 		}
 	} else {
+		nodeSelectors := make([]v1.NodeSelectorTerm, 1)
+		nodeSelectors[0].MatchExpressions = make([]v1.NodeSelectorRequirement, 1)
+		nodeSelectors[0].MatchExpressions[0].Key = nodeNameLabel
+		nodeSelectors[0].MatchExpressions[0].Operator = v1.NodeSelectorOpIn
+		nodeSelectors[0].MatchExpressions[0].Values = make([]string, 1)
+		nodeSelectors[0].MatchExpressions[0].Values[0] = p.provisionerHost
+
+		log.Infof("Provisioner: %v has created VolumeNodeAffinity annotations with key: %v operator: %v and values: %v and has kubernetes node label: %v",
+			p.alphaId, nodeSelectors[0].MatchExpressions[0].Key, nodeSelectors[0].MatchExpressions[0].Operator, nodeSelectors[0].MatchExpressions[0].Values, p.kubernetesHostIdentifier)
+
 		pv = &v1.PersistentVolume{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        options.PVName,
@@ -125,8 +135,13 @@ func (p ZFSProvisioner) Provision(options controller.VolumeOptions) (*v1.Persist
 					v1.ResourceName(v1.ResourceStorage): options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
 				},
 				PersistentVolumeSource: v1.PersistentVolumeSource{
-					HostPath: &v1.HostPathVolumeSource{
+					Local: &v1.LocalVolumeSource{
 						Path: path,
+					},
+				},
+				NodeAffinity: &v1.VolumeNodeAffinity{
+					Required: &v1.NodeSelector{
+						NodeSelectorTerms: nodeSelectors,
 					},
 				},
 			},

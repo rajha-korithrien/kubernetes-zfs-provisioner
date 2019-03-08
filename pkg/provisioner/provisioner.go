@@ -24,6 +24,7 @@ const (
 	claimMapNameParam      = "zfs-provisioner-claimMap-name"
 	provisionerCountParam  = "zfs-provisioner-count"
 	provisionersListingKey = "zfs-provisioners-listing"
+	nodeNameLabel          = "kubernetes.io/hostname"
 )
 
 // ZFSProvisioner implements the Provisioner interface to create and export ZFS volumes
@@ -38,8 +39,9 @@ type ZFSProvisioner struct {
 	persistentVolumeCapacity *prometheus.Desc
 	persistentVolumeUsed     *prometheus.Desc
 
-	provisionerHost string //the host running this provisioner
-	alphaId         string //used to provide a unique kubernetes configmap key safe id for this provisioner
+	provisionerHost          string //the host running this provisioner
+	alphaId                  string //used to provide a unique kubernetes configmap key safe id for this provisioner
+	kubernetesHostIdentifier string //used to match against the contents of "kubernetes.io/hostname" label
 
 	client *kubernetes.Clientset //used to allow us to access objects in kubernetes for syncing/locking
 }
@@ -362,7 +364,7 @@ func (p ZFSProvisioner) Collect(ch chan<- prometheus.Metric) {
 
 // NewZFSProvisioner returns a new ZFSProvisioner
 func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname string, provisionerHostName string,
-	reclaimPolicy string, doNfsExport bool, alphaId string, kubernetes *kubernetes.Clientset) ZFSProvisioner {
+	reclaimPolicy string, doNfsExport bool, alphaId string, kubernetesNodeName string, kubernetes *kubernetes.Clientset) ZFSProvisioner {
 	var kubernetesReclaimPolicy v1.PersistentVolumeReclaimPolicy
 
 	// Parse reclaim policy
@@ -385,9 +387,10 @@ func NewZFSProvisioner(parent *zfs.Dataset, shareOptions string, serverHostname 
 		serverHostname: serverHostname,
 		reclaimPolicy:  kubernetesReclaimPolicy,
 
-		provisionerHost: provisionerHostName,
-		alphaId:         alphaId,
-		client:          kubernetes,
+		provisionerHost:          provisionerHostName,
+		alphaId:                  alphaId,
+		kubernetesHostIdentifier: kubernetesNodeName,
+		client:                   kubernetes,
 
 		persistentVolumeCapacity: prometheus.NewDesc(
 			"zfs_provisioner_persistent_volume_capacity",

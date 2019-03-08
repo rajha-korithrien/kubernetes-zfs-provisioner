@@ -14,7 +14,7 @@ import (
 func TestDelete(t *testing.T) {
 	parent, _ := zfs.GetDataset("test/volumes")
 	p := NewZFSProvisioner(parent, "rw=@127.0.0.1", "", "test-id",
-		"Retain", true, "testing-0", nil)
+		"Retain", true, "testing-0", "testing-kubernetes-0", nil)
 	options := controller.VolumeOptions{
 		PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimDelete,
 		PVName:                        "pv-testdelete",
