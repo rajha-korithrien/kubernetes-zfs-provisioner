@@ -1,7 +1,15 @@
----
+apiVersion: storage.k8s.io/v1
 kind: StorageClass
-apiVersion: storage.k8s.io/v1beta1
 metadata:
   name: zfs-sc
   namespace: zfs-system
-provisioner: gentics.com/zfs
+#volumeBindingMode: WaitForFirstConsumer
+provisioner: gentics.com/zfs-mirror
+reclaimPolicy: Delete
+mountOptions:
+  - uid=1000
+  - gid=1000
+parameters:
+  zfs-provisioner-claimMap-namespace: zfs-system
+  zfs-provisioner-claimMap-name: zfs-provisioner-config
+  zfs-provisioner-count: "3"
